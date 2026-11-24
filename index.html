@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>うたてん紅白票数グラフ</title>
+<style>
+  body { font-family: -apple-system, "Hiragino Sans", sans-serif; margin: 0; background: #f6f6f8; color: #222; }
+  header { background: #111; color: #fff; padding: 14px 16px; }
+  header h1 { font-size: 18px; margin: 0 0 4px; }
+  header .sub { font-size: 12px; opacity: .75; }
+  main { max-width: 960px; margin: 0 auto; padding: 12px; }
+  .card { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card h2 { font-size: 15px; margin: 0 0 8px; }
+  .red h2 { color: #c2183f; } .white h2 { color: #555; }
+  .chart { width: 100%; height: 340px; }
+  .bar { height: 420px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 5px 6px; border-bottom: 1px solid #eee; text-align: right; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  .tot { font-size: 13px; color: #444; margin-bottom: 6px; }
+  .pos { color: #0a7d33; }
+  #status { padding: 10px 4px; font-size: 13px; color: #666; }
+</style>
+<script src="https://www.gstatic.com/charts/loader.js"></script>
+</head>
+<body>
+<header>
+  <h1>うたてん 紅白歌合戦アンケート 票数グラフ</h1>
+  <div class="sub">第77回紅白歌合戦で楽しみなアーティストは？（10分おき自動収集 / このページも開くたびに最新化、開いたままでも5分おきに再読込）</div>
+</header>
+<main id="main"><div id="status">読み込み中…</div></main>
+<script>
+var SHEET_ID = '1-StuYTrh5k_f95x4Q8NrKKuY3_FkXx8-qQjcMNU4WpA';
+var TEAMS = [
+  { key: '紅組', sheet: '紅組' },
+  { key: '白組', sheet: '白組' }
+];
+function csvUrl(sheet) {
+  return 'https://docs.google.com/spreadsheets/d/' + SHEET_ID +
+    '/gviz/tq?tqx=out:csv&sheet=' + encodeURIComponent(sheet);
+}
+function parseCsv(text) {
+  var lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(function (l) { return l.length > 0; });
+  return lines.map(function (line) {
+    return line.split(',').map(function (c) {
+      c = c.trim();
+      if (c.length >= 2 && c.charAt(0) === '"' && c.charAt(c.length - 1) === '"') c = c.slice(1, -1).replace(/""/g, '"');
+      return c;
+    });
+  });
+}
+function toTeam(cfg, table) {
+  var header = table[0];
+  var artists = header.slice(3);
+  var rows = [];
+  for (var i = 1; i < table.length; i++) {
+    var r = table[i];
+    if (!r[0]) continue;
+    var row = [r[0].replace(/\//g, '-'), Number(r[1]) || null, Number(r[2]) || null];
+    for (var j = 0; j < artists.length; j++) row.push(r[3 + j] === '' || r[3 + j] == null ? null : Number(r[3 + j]));
+    rows.push(row);
+  }
+  var maxPts = 400;
+  if (rows.length > maxPts) {
+    var step = Math.ceil(rows.length / maxPts);
+    var slim = rows.filter(function (_, i) { return i % step === 0; });
+    if (slim[slim.length - 1] !== rows[rows.length - 1]) slim.push(rows[rows.length - 1]);
+    rows = slim;
+  }
+  return { key: cfg.key, artists: artists, rows: rows };
+}
+var DATA = null;
+function load() {
+  return Promise.all(TEAMS.map(function (cfg) {
+    return fetch(csvUrl(cfg.sheet)).then(function (res) {
+      if (!res.ok) throw new Error('fetch failed: ' + cfg.sheet);
+      return res.text();
+    }).then(function (text) { return toTeam(cfg, parseCsv(text)); });
+  })).then(function (teams) {
+    DATA = { teams: teams };
+    drawAll();
+  }).catch(function (e) {
+    document.getElementById('status').textContent = '読み込みに失敗しました: ' + e.message;
+  });
+}
+function fmt(n) { return n == null ? '-' : Number(n).toLocaleString('ja-JP'); }
+function drawAll() {
+  var main = document.getElementById('main');
+  main.innerHTML = '';
+  DATA.teams.forEach(function (team, ti) {
+    if (!team.rows.length) return;
+    var last = team.rows[team.rows.length - 1];
+    var first = team.rows[0];
+    var card = document.createElement('section');
+    card.className = 'card ' + (ti === 0 ? 'red' : 'white');
+    var h = document.createElement('h2');
+    h.textContent = team.key + '（' + team.artists.length + '組）';
+    card.appendChild(h);
+    var tot = document.createElement('div');
+    tot.className = 'tot';
+    tot.textContent = '最新 ' + last[0].replace('T', ' ') + ' / 投票数(サイト表示) ' + fmt(last[1]) + ' / 合計(集計) ' + fmt(last[2]);
+    card.appendChild(tot);
+    var line = document.createElement('div'); line.className = 'chart'; card.appendChild(line);
+    var bar = document.createElement('div'); bar.className = 'chart bar'; card.appendChild(bar);
+    var tblWrap = document.createElement('div'); card.appendChild(tblWrap);
+    main.appendChild(card);
+    drawLine(team, line);
+    drawBar(team, last, bar);
+    tblWrap.appendChild(buildTable(team, first, last));
+  });
+}
+function topIdx(team, last, n) {
+  var idx = team.artists.map(function (_, i) { return i; });
+  idx.sort(function (a, b) { return (last[3 + b] || 0) - (last[3 + a] || 0); });
+  return idx.slice(0, n);
+}
+function drawLine(team, el) {
+  var last = team.rows[team.rows.length - 1];
+  var tops = topIdx(team, last, 6);
+  var dt = new google.visualization.DataTable();
+  dt.addColumn('datetime', '時刻');
+  tops.forEach(function (i) { dt.addColumn('number', team.artists[i]); });
+  team.rows.forEach(function (r) {
+    var row = [new Date(r[0])];
+    tops.forEach(function (i) { row.push(r[3 + i]); });
+    dt.addRow(row);
+  });
+  var chart = new google.visualization.LineChart(el);
+  chart.draw(dt, { title: '票数の推移（上位6組）', legend: { position: 'bottom' }, chartArea: { width: '88%', height: '72%' }, vAxis: { format: 'short' } });
+}
+function drawBar(team, last, el) {
+  var arr = [['アーティスト', '票数']];
+  var idx = team.artists.map(function (_, i) { return i; });
+  idx.sort(function (a, b) { return (last[3 + b] || 0) - (last[3 + a] || 0); });
+  idx.forEach(function (i) { arr.push([team.artists[i], last[3 + i] || 0]); });
+  var dt = google.visualization.arrayToDataTable(arr);
+  var chart = new google.visualization.BarChart(el);
+  chart.draw(dt, { title: '最新ランキング', legend: { position: 'none' }, chartArea: { width: '62%', height: '88%' }, hAxis: { format: 'short' }, colors: [team.key === '紅組' ? '#e0245e' : '#5b7fa6'] });
+}
+function buildTable(team, first, last) {
+  var sum = last[2] || 1;
+  var dayAgo = null;
+  var target = new Date(last[0]).getTime() - 24 * 3600 * 1000;
+  team.rows.forEach(function (r) { if (new Date(r[0]).getTime() <= target) dayAgo = r; });
+  if (!dayAgo) dayAgo = first;
+  var idx = team.artists.map(function (_, i) { return i; });
+  idx.sort(function (a, b) { return (last[3 + b] || 0) - (last[3 + a] || 0); });
+  var t = document.createElement('table');
+  var html = '<tr><th>順位</th><th>アーティスト</th><th>票数</th><th>シェア</th><th>開始時から</th><th>24h前から</th></tr>';
+  idx.forEach(function (ai, rank) {
+    var v = last[3 + ai] || 0;
+    var d0 = v - (first[3 + ai] || 0);
+    var d1 = v - (dayAgo[3 + ai] || 0);
+    html += '<tr><td>' + (rank + 1) + '</td><td>' + team.artists[ai] + '</td><td>' + fmt(v) + '</td><td>' +
+      (100 * v / sum).toFixed(1) + '%</td><td class="pos">+' + fmt(d0) + '</td><td class="pos">+' + fmt(d1) + '</td></tr>';
+  });
+  t.innerHTML = html;
+  return t;
+}
+google.charts.load('current', { packages: ['corechart'] });
+google.charts.setOnLoadCallback(function () {
+  load();
+  setInterval(load, 5 * 60 * 1000);
+});
+</script>
+</body>
+</html>
