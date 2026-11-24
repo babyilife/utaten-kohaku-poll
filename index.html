@@ -18,24 +18,51 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { padding: 5px 6px; border-bottom: 1px solid #eee; text-align: right; }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  tr.dim { opacity: .35; }
   .tot { font-size: 13px; color: #444; margin-bottom: 6px; }
   .pos { color: #0a7d33; }
   #status { padding: 10px 4px; font-size: 13px; color: #666; }
+  .controls { margin: 8px 0 4px; }
+  .controls .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .controls button { background: #eef0f3; border: 1px solid #d5d9df; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d5d9df; border-radius: 999px; padding: 3px 10px 3px 6px; font-size: 12px; cursor: pointer; user-select: none; background: #fff; }
+  .chip input { margin: 0; }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .chip.off { opacity: .45; }
+  .glabel { font-size: 12px; color: #666; margin-right: 2px; }
 </style>
 <script src="https://www.gstatic.com/charts/loader.js"></script>
 </head>
 <body>
 <header>
   <h1>うたてん 紅白歌合戦アンケート 票数グラフ</h1>
-  <div class="sub">第77回紅白歌合戦で楽しみなアーティストは？（10分おき自動収集 / このページも開くたびに最新化、開いたままでも5分おきに再読込）</div>
+  <div class="sub">第77回紅白歌合戦で楽しみなアーティストは？（10分おき自動収集 / 開くたびに最新化、開いたままでも5分おきに再読込）</div>
 </header>
 <main id="main"><div id="status">読み込み中…</div></main>
 <script>
 var SHEET_ID = '1-StuYTrh5k_f95x4Q8NrKKuY3_FkXx8-qQjcMNU4WpA';
+
 var TEAMS = [
   { key: '紅組', sheet: '紅組' },
   { key: '白組', sheet: '白組' }
 ];
+var COLORS = ['#e0245e','#1f77b4','#ff7f0e','#2ca02c','#9467bd','#8c564b','#e377c2','#17becf',
+  '#bcbd22','#d62728','#0057b8','#e69f00','#009e73','#0072b2','#f0e442','#cc79a7',
+  '#56b4e9','#332288','#882255','#44aa99','#117733'];
+var SEL = loadSel();
+function loadSel() {
+  try { return JSON.parse(localStorage.getItem('utaten-sel-v1') || '{}'); } catch (e) { return {}; }
+}
+function saveSel() {
+  try { localStorage.setItem('utaten-sel-v1', JSON.stringify(SEL)); } catch (e) {}
+}
+function selSet(team) {
+  if (!SEL[team.key]) {
+    var last = team.rows[team.rows.length - 1];
+    SEL[team.key] = topIdx(team, last, 6).map(function (i) { return team.artists[i]; });
+  }
+  return new Set(SEL[team.key]);
+}
 function csvUrl(sheet) {
   return 'https://docs.google.com/spreadsheets/d/' + SHEET_ID +
     '/gviz/tq?tqx=out:csv&sheet=' + encodeURIComponent(sheet);
@@ -53,14 +80,16 @@ function parseCsv(text) {
 function toTeam(cfg, table) {
   var header = table[0];
   var artists = header.slice(3);
-  var rows = [];
+  var full = [];
   for (var i = 1; i < table.length; i++) {
     var r = table[i];
     if (!r[0]) continue;
     var row = [r[0].replace(/\//g, '-'), Number(r[1]) || null, Number(r[2]) || null];
     for (var j = 0; j < artists.length; j++) row.push(r[3 + j] === '' || r[3 + j] == null ? null : Number(r[3 + j]));
-    rows.push(row);
+    full.push(row);
   }
+  var hourly = buildHourly(artists, full);
+  var rows = full;
   var maxPts = 400;
   if (rows.length > maxPts) {
     var step = Math.ceil(rows.length / maxPts);
@@ -68,7 +97,27 @@ function toTeam(cfg, table) {
     if (slim[slim.length - 1] !== rows[rows.length - 1]) slim.push(rows[rows.length - 1]);
     rows = slim;
   }
-  return { key: cfg.key, artists: artists, rows: rows };
+  return { key: cfg.key, artists: artists, rows: rows, full: full, hourly: hourly };
+}
+function buildHourly(artists, full) {
+  var times = [], gains = artists.map(function () { return []; });
+  if (!full.length) return { times: times, gains: gains };
+  var t0 = new Date(full[0][0]).getTime();
+  var t1 = new Date(full[full.length - 1][0]).getTime();
+  var start = Math.ceil(t0 / 3600000) * 3600000;
+  var p = 0, prev = null;
+  for (var h = start; h <= t1; h += 3600000) {
+    while (p + 1 < full.length && new Date(full[p + 1][0]).getTime() <= h) p++;
+    if (new Date(full[p][0]).getTime() > h) { prev = null; continue; }
+    var cur = full[p];
+    times.push(h);
+    for (var a = 0; a < artists.length; a++) {
+      var v = cur[3 + a], pv = prev ? prev[3 + a] : null;
+      gains[a].push(v != null && pv != null ? v - pv : null);
+    }
+    prev = cur;
+  }
+  return { times: times, gains: gains };
 }
 var DATA = null;
 function load() {
@@ -81,10 +130,16 @@ function load() {
     DATA = { teams: teams };
     drawAll();
   }).catch(function (e) {
-    document.getElementById('status').textContent = '読み込みに失敗しました: ' + e.message;
+    var st = document.getElementById('status');
+    if (st) st.textContent = '読み込みに失敗しました: ' + e.message;
   });
 }
 function fmt(n) { return n == null ? '-' : Number(n).toLocaleString('ja-JP'); }
+function topIdx(team, last, n) {
+  var idx = team.artists.map(function (_, i) { return i; });
+  idx.sort(function (a, b) { return (last[3 + b] || 0) - (last[3 + a] || 0); });
+  return idx.slice(0, n);
+}
 function drawAll() {
   var main = document.getElementById('main');
   main.innerHTML = '';
@@ -92,6 +147,7 @@ function drawAll() {
     if (!team.rows.length) return;
     var last = team.rows[team.rows.length - 1];
     var first = team.rows[0];
+    var sel = selSet(team);
     var card = document.createElement('section');
     card.className = 'card ' + (ti === 0 ? 'red' : 'white');
     var h = document.createElement('h2');
@@ -101,59 +157,114 @@ function drawAll() {
     tot.className = 'tot';
     tot.textContent = '最新 ' + last[0].replace('T', ' ') + ' / 投票数(サイト表示) ' + fmt(last[1]) + ' / 合計(集計) ' + fmt(last[2]);
     card.appendChild(tot);
+    var controls = document.createElement('div');
+    controls.className = 'controls';
+    var btnRow = document.createElement('div'); btnRow.className = 'row';
+    var gl = document.createElement('span'); gl.className = 'glabel'; gl.textContent = 'グラフ表示：';
+    btnRow.appendChild(gl);
+    [['上位6組', function () { SEL[team.key] = topIdx(team, last, 6).map(function (i) { return team.artists[i]; }); }],
+     ['全員', function () { SEL[team.key] = team.artists.slice(); }],
+     ['なし', function () { SEL[team.key] = []; }]].forEach(function (pair) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.textContent = pair[0];
+      b.addEventListener('click', function () { pair[1](); saveSel(); drawAll(); });
+      btnRow.appendChild(b);
+    });
+    controls.appendChild(btnRow);
+    var chipRow = document.createElement('div'); chipRow.className = 'row';
+    team.artists.forEach(function (name, ai) {
+      var lab = document.createElement('label');
+      lab.className = 'chip' + (sel.has(name) ? '' : ' off');
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = sel.has(name);
+      cb.addEventListener('change', function () {
+        var s = selSet(team);
+        if (cb.checked) s.add(name); else s.delete(name);
+        SEL[team.key] = Array.from(s);
+        saveSel(); drawAll();
+      });
+      var dot = document.createElement('span');
+      dot.className = 'dot'; dot.style.background = COLORS[ai % COLORS.length];
+      lab.appendChild(cb); lab.appendChild(dot);
+      lab.appendChild(document.createTextNode(name));
+      chipRow.appendChild(lab);
+    });
+    controls.appendChild(chipRow);
+    card.appendChild(controls);
     var line = document.createElement('div'); line.className = 'chart'; card.appendChild(line);
+    var hour = document.createElement('div'); hour.className = 'chart'; card.appendChild(hour);
     var bar = document.createElement('div'); bar.className = 'chart bar'; card.appendChild(bar);
     var tblWrap = document.createElement('div'); card.appendChild(tblWrap);
     main.appendChild(card);
-    drawLine(team, line);
-    drawBar(team, last, bar);
-    tblWrap.appendChild(buildTable(team, first, last));
+    var idxs = team.artists.map(function (_, i) { return i; }).filter(function (i) { return sel.has(team.artists[i]); });
+    drawLine(team, idxs, line);
+    drawHourly(team, idxs, hour);
+    drawBar(team, last, idxs, bar);
+    tblWrap.appendChild(buildTable(team, first, last, sel));
   });
 }
-function topIdx(team, last, n) {
-  var idx = team.artists.map(function (_, i) { return i; });
-  idx.sort(function (a, b) { return (last[3 + b] || 0) - (last[3 + a] || 0); });
-  return idx.slice(0, n);
+function seriesColors(idxs) {
+  return idxs.map(function (i) { return COLORS[i % COLORS.length]; });
 }
-function drawLine(team, el) {
-  var last = team.rows[team.rows.length - 1];
-  var tops = topIdx(team, last, 6);
+function drawLine(team, idxs, el) {
+  if (!idxs.length) { el.innerHTML = '<div style="padding:12px;color:#888;font-size:13px">表示するアーティストが選ばれていません</div>'; return; }
   var dt = new google.visualization.DataTable();
   dt.addColumn('datetime', '時刻');
-  tops.forEach(function (i) { dt.addColumn('number', team.artists[i]); });
+  idxs.forEach(function (i) { dt.addColumn('number', team.artists[i]); });
   team.rows.forEach(function (r) {
     var row = [new Date(r[0])];
-    tops.forEach(function (i) { row.push(r[3 + i]); });
+    idxs.forEach(function (i) { row.push(r[3 + i]); });
     dt.addRow(row);
   });
   var chart = new google.visualization.LineChart(el);
-  chart.draw(dt, { title: '票数の推移（上位6組）', legend: { position: 'bottom' }, chartArea: { width: '88%', height: '72%' }, vAxis: { format: 'short' } });
+  chart.draw(dt, { title: '票数の推移（選択中のみ）', legend: { position: 'bottom' }, chartArea: { width: '88%', height: '72%' }, vAxis: { format: 'short' }, colors: seriesColors(idxs) });
 }
-function drawBar(team, last, el) {
+function drawHourly(team, idxs, el) {
+  if (!idxs.length || !team.hourly.times.length) { el.innerHTML = ''; return; }
+  var dt = new google.visualization.DataTable();
+  dt.addColumn('datetime', '時刻');
+  idxs.forEach(function (i) { dt.addColumn('number', team.artists[i]); });
+  team.hourly.times.forEach(function (h, hi) {
+    var row = [new Date(h)];
+    idxs.forEach(function (i) { row.push(team.hourly.gains[i][hi]); });
+    dt.addRow(row);
+  });
+  var chart = new google.visualization.LineChart(el);
+  chart.draw(dt, { title: '1時間あたりの増加数', legend: { position: 'bottom' }, chartArea: { width: '88%', height: '72%' }, vAxis: { format: 'short' }, colors: seriesColors(idxs) });
+}
+function drawBar(team, last, idxs, el) {
+  var use = idxs.length ? idxs : team.artists.map(function (_, i) { return i; });
   var arr = [['アーティスト', '票数']];
-  var idx = team.artists.map(function (_, i) { return i; });
-  idx.sort(function (a, b) { return (last[3 + b] || 0) - (last[3 + a] || 0); });
-  idx.forEach(function (i) { arr.push([team.artists[i], last[3 + i] || 0]); });
+  var sorted = use.slice();
+  sorted.sort(function (a, b) { return (last[3 + b] || 0) - (last[3 + a] || 0); });
+  sorted.forEach(function (i) { arr.push([team.artists[i], last[3 + i] || 0]); });
   var dt = google.visualization.arrayToDataTable(arr);
   var chart = new google.visualization.BarChart(el);
-  chart.draw(dt, { title: '最新ランキング', legend: { position: 'none' }, chartArea: { width: '62%', height: '88%' }, hAxis: { format: 'short' }, colors: [team.key === '紅組' ? '#e0245e' : '#5b7fa6'] });
+  chart.draw(dt, { title: '最新ランキング（選択中のみ）', legend: { position: 'none' }, chartArea: { width: '62%', height: '88%' }, hAxis: { format: 'short' }, colors: [team.key === '紅組' ? '#e0245e' : '#5b7fa6'] });
 }
-function buildTable(team, first, last) {
+function buildTable(team, first, last, sel) {
   var sum = last[2] || 1;
   var dayAgo = null;
   var target = new Date(last[0]).getTime() - 24 * 3600 * 1000;
-  team.rows.forEach(function (r) { if (new Date(r[0]).getTime() <= target) dayAgo = r; });
+  team.full.forEach(function (r) { if (new Date(r[0]).getTime() <= target) dayAgo = r; });
   if (!dayAgo) dayAgo = first;
   var idx = team.artists.map(function (_, i) { return i; });
   idx.sort(function (a, b) { return (last[3 + b] || 0) - (last[3 + a] || 0); });
   var t = document.createElement('table');
-  var html = '<tr><th>順位</th><th>アーティスト</th><th>票数</th><th>シェア</th><th>開始時から</th><th>24h前から</th></tr>';
+  var html = '<tr><th>順位</th><th>アーティスト</th><th>票数</th><th>シェア</th><th>開始時から</th><th>24h前から</th><th>直近1h</th></tr>';
+  var lastHourGain = {};
+  if (team.hourly.times.length) {
+    var hi = team.hourly.times.length - 1;
+    team.artists.forEach(function (_, ai) { lastHourGain[ai] = team.hourly.gains[ai][hi]; });
+  }
   idx.forEach(function (ai, rank) {
     var v = last[3 + ai] || 0;
     var d0 = v - (first[3 + ai] || 0);
     var d1 = v - (dayAgo[3 + ai] || 0);
-    html += '<tr><td>' + (rank + 1) + '</td><td>' + team.artists[ai] + '</td><td>' + fmt(v) + '</td><td>' +
-      (100 * v / sum).toFixed(1) + '%</td><td class="pos">+' + fmt(d0) + '</td><td class="pos">+' + fmt(d1) + '</td></tr>';
+    var hg = lastHourGain[ai];
+    html += '<tr' + (sel.has(team.artists[ai]) ? '' : ' class="dim"') + '><td>' + (rank + 1) + '</td><td>' + team.artists[ai] + '</td><td>' + fmt(v) + '</td><td>' +
+      (100 * v / sum).toFixed(1) + '%</td><td class="pos">+' + fmt(d0) + '</td><td class="pos">+' + fmt(d1) + '</td><td class="pos">' +
+      (hg == null ? '-' : '+' + fmt(hg)) + '</td></tr>';
   });
   t.innerHTML = html;
   return t;
